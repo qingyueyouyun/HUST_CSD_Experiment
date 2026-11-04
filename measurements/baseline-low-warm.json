@@ -1,0 +1,197 @@
+{
+  "label": "baseline-low-warm",
+  "command": [
+    "/home/xwc/fvs-course-lab/systems/GateANN-public/build/tests/search_disk_index_yfcc",
+    "uint8",
+    "/home/xwc/fvs-course-lab/course_runs/indices/gateann/formal_1000000/yfcc",
+    "1",
+    "8",
+    "/home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/query.u8bin",
+    "/home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/base.metadata.spmat",
+    "/home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/query.metadata.spmat",
+    "/home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/ground_truth.ids.ibin",
+    "10",
+    "l2",
+    "pq",
+    "8",
+    "0",
+    "0",
+    "32",
+    "320"
+  ],
+  "returncode": 0,
+  "elapsed_s": 0.56968,
+  "device": "sdd",
+  "physical_read_mib": 3.422,
+  "cpu_busy_percent_system_wide": 17.95,
+  "loadavg_before": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "loadavg_after": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "mem_before_kb": {
+    "MemTotal": 16008852,
+    "MemFree": 14973892,
+    "MemAvailable": 15317980,
+    "Buffers": 19468,
+    "Cached": 500036,
+    "SwapCached": 0,
+    "SwapFree": 4194304,
+    "Dirty": 120,
+    "Writeback": 0
+  },
+  "mem_after_kb": {
+    "MemTotal": 16008852,
+    "MemFree": 14956380,
+    "MemAvailable": 15300532,
+    "Buffers": 19468,
+    "Cached": 500036,
+    "SwapCached": 0,
+    "SwapFree": 4194304,
+    "Dirty": 120,
+    "Writeback": 0
+  },
+  "cached_peak_kb": 500036,
+  "cached_delta_kb": 0,
+  "psi_io_some_delta_us": 0.0,
+  "psi_cpu_some_delta_us": 5632.0,
+  "background_processes_before": [
+    {
+      "pid": 823,
+      "cpu_percent": 30.0,
+      "mem_percent": 0.0,
+      "stat": "Ss+",
+      "comm": "python3",
+      "args": "python3 /mnt/c/Users/谢伟超/Desktop/计算机系统/gateann-hybrid-tunnel/scripts/measure_cache_and_load.py --label baseline-low-warm --device sdd --out /home/xwc/cache-probe -- /home/xwc/fvs-course-lab/systems/GateANN-public/build/tests/search_disk_index_yfcc uint8 /home/xwc/fvs-course-lab/course_runs/indices/gateann/formal_1000000/yfcc 1 8 /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/query.u8bin /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/base.metadata.spmat /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/query.metadata.spmat /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/ground_truth.ids.ibin 10 l2 pq 8 0 0 32 320"
+    },
+    {
+      "pid": 1,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd",
+      "args": "/sbin/init"
+    },
+    {
+      "pid": 91,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd-udevd",
+      "args": "/usr/lib/systemd/systemd-udevd"
+    },
+    {
+      "pid": 7,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Sl+",
+      "comm": "init",
+      "args": "plan9 --control-socket 7 --log-level 4 --server-fd 8 --pipe-fd 10 --log-truncate"
+    },
+    {
+      "pid": 40,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.1,
+      "stat": "S<s",
+      "comm": "systemd-journal",
+      "args": "/usr/lib/systemd/systemd-journald"
+    },
+    {
+      "pid": 183,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.1,
+      "stat": "Ssl",
+      "comm": "unattended-upgr",
+      "args": "/usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal"
+    },
+    {
+      "pid": 319,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd",
+      "args": "/usr/lib/systemd/systemd --user"
+    },
+    {
+      "pid": 136,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd-resolve",
+      "args": "/usr/lib/systemd/systemd-resolved"
+    }
+  ],
+  "background_processes_after": [
+    {
+      "pid": 823,
+      "cpu_percent": 8.8,
+      "mem_percent": 0.0,
+      "stat": "Ss+",
+      "comm": "python3",
+      "args": "python3 /mnt/c/Users/谢伟超/Desktop/计算机系统/gateann-hybrid-tunnel/scripts/measure_cache_and_load.py --label baseline-low-warm --device sdd --out /home/xwc/cache-probe -- /home/xwc/fvs-course-lab/systems/GateANN-public/build/tests/search_disk_index_yfcc uint8 /home/xwc/fvs-course-lab/course_runs/indices/gateann/formal_1000000/yfcc 1 8 /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/query.u8bin /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/base.metadata.spmat /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/query.metadata.spmat /home/xwc/fvs-course-lab/datasets/yfcc_course_v1/formal_1000000/workloads/low/ground_truth.ids.ibin 10 l2 pq 8 0 0 32 320"
+    },
+    {
+      "pid": 1,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd",
+      "args": "/sbin/init"
+    },
+    {
+      "pid": 91,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd-udevd",
+      "args": "/usr/lib/systemd/systemd-udevd"
+    },
+    {
+      "pid": 7,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Sl+",
+      "comm": "init",
+      "args": "plan9 --control-socket 7 --log-level 4 --server-fd 8 --pipe-fd 10 --log-truncate"
+    },
+    {
+      "pid": 40,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.1,
+      "stat": "S<s",
+      "comm": "systemd-journal",
+      "args": "/usr/lib/systemd/systemd-journald"
+    },
+    {
+      "pid": 183,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.1,
+      "stat": "Ssl",
+      "comm": "unattended-upgr",
+      "args": "/usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal"
+    },
+    {
+      "pid": 319,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd",
+      "args": "/usr/lib/systemd/systemd --user"
+    },
+    {
+      "pid": 136,
+      "cpu_percent": 0.0,
+      "mem_percent": 0.0,
+      "stat": "Ss",
+      "comm": "systemd-resolve",
+      "args": "/usr/lib/systemd/systemd-resolved"
+    }
+  ],
+  "process_cpu_percent": "289%",
+  "peak_rss_kb_time": 417700
+}

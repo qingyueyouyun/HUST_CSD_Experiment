@@ -1,0 +1,12 @@
+* text=auto
+
+# Shell/Python sources must stay LF so they run under WSL/Linux.
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+*.log text eol=lf
+
+# The patch contains CRLF context from the upstream CLI file; keep it byte-exact.
+*.patch -text

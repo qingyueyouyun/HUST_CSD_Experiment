@@ -1,0 +1,422 @@
+diff --git a/include/ssd_index.h b/include/ssd_index.h
+index 7bd2945..8cdbde3 100644
+--- a/include/ssd_index.h
++++ b/include/ssd_index.h
+@@ -5,6 +5,9 @@
+ #include <queue>
+ #include <string>
+ #include <set>
++#include <memory>
++#include <mutex>
++#include <unordered_map>
+ #include <omp.h>
+ 
+ #include "aligned_file_reader.h"
+@@ -381,6 +384,114 @@ namespace pipeann {
+     void set_filter_precheck(bool v)       { filter_precheck_ = v; }
+     void set_early_filter_check(bool v)    { early_filter_check_ = v; }
+ 
++    // Adaptive hybrid Graph Tunneling (query-stage only; no index rebuild).
++    void set_hybrid_tunnel(bool enabled, uint32_t relay_hops, uint32_t relay_budget,
++                           uint32_t relay_total_budget, double sel_threshold,
++                           uint32_t sel_samples) {
++      hybrid_tunnel_ = enabled;
++      relay_hops_ = relay_hops;
++      relay_budget_ = relay_budget;
++      relay_total_budget_ = relay_total_budget;
++      relay_sel_threshold_ = sel_threshold;
++      relay_sel_samples_ = sel_samples;
++    }
++
++    // A cached valid-node bitmap for one query label set. One bit per base
++    // node; bit tests replace the much more expensive per-node label merge in
++    // the relay traversal. Memory: n/8 bytes per distinct label set.
++    struct FilterBitmap {
++      uint32_t n = 0;
++      double selectivity = 1.0;
++      std::vector<uint64_t> words;
++      inline bool test(uint32_t id) const {
++        return id < n && ((words[id >> 6] >> (id & 63)) & 1ull) != 0;
++      }
++    };
++
++    // Cheap sampling estimate, used only to decide whether to build a bitmap.
++    double sample_selectivity(const void *filter_data, uint32_t samples) const {
++      const bool multi = spmat_filter_ && spmat_filter_->loaded();
++      const bool single = filter_store_ && filter_store_->loaded();
++      if ((!multi && !single) || samples == 0) return 1.0;
++      const uint32_t n = multi ? (uint32_t) spmat_filter_->size() : (uint32_t) filter_store_->size();
++      if (n == 0) return 1.0;
++      uint32_t passed = 0;
++      uint64_t state = 0x9E3779B97F4A7C15ull;
++      for (uint32_t i = 0; i < samples; ++i) {
++        state = state * 6364136223846793005ull + 1442695040888963407ull;
++        const uint32_t id = (uint32_t) ((state >> 33) % n);
++        const bool ok = multi ? spmat_filter_->passes(id, filter_data)
++                              : filter_store_->passes(id, *(const uint8_t *) filter_data);
++        passed += ok ? 1 : 0;
++      }
++      return (double) passed / (double) samples;
++    }
++
++    // Return an exact, cached valid-node bitmap for a low-selectivity query
++    // label set. Returns nullptr when the sampled selectivity is above the
++    // switch threshold, so the baseline path pays no bitmap cost.
++    std::shared_ptr<const FilterBitmap> get_filter_bitmap(const void *filter_data, double &estimate) const {
++      estimate = 1.0;
++      if (filter_data == nullptr) return nullptr;
++      const bool multi = spmat_filter_ && spmat_filter_->loaded();
++      const bool single = filter_store_ && filter_store_->loaded();
++      if (!multi && !single) return nullptr;
++
++      uint32_t label_count = 0;
++      if (multi) memcpy(&label_count, filter_data, sizeof(uint32_t));
++      const size_t key_len = multi ? sizeof(uint32_t) + (size_t) label_count * sizeof(uint32_t) : 1;
++      std::string key((const char *) filter_data, key_len);
++      {
++        std::lock_guard<std::mutex> lock(bitmap_mu_);
++        auto cached = bitmap_cache_.find(key);
++        if (cached != bitmap_cache_.end()) {
++          estimate = cached->second->selectivity;
++          return cached->second;
++        }
++        auto known = estimate_cache_.find(key);
++        if (known != estimate_cache_.end()) {
++          estimate = known->second;
++          return nullptr;
++        }
++      }
++
++      const double sampled = sample_selectivity(filter_data, relay_sel_samples_);
++      if (sampled > relay_sel_threshold_) {
++        estimate = sampled;
++        std::lock_guard<std::mutex> lock(bitmap_mu_);
++        estimate_cache_[key] = sampled;
++        return nullptr;
++      }
++
++      const uint32_t n = multi ? (uint32_t) spmat_filter_->size() : (uint32_t) filter_store_->size();
++      if (n == 0) return nullptr;
++      auto bitmap = std::make_shared<FilterBitmap>();
++      bitmap->n = n;
++      bitmap->words.assign((n + 63) / 64, 0);
++      uint32_t passed = 0;
++      for (uint32_t id = 0; id < n; ++id) {
++        const bool ok = multi ? spmat_filter_->passes(id, filter_data)
++                              : filter_store_->passes(id, *(const uint8_t *) filter_data);
++        if (ok) {
++          bitmap->words[id >> 6] |= 1ull << (id & 63);
++          ++passed;
++        }
++      }
++      bitmap->selectivity = (double) passed / (double) n;
++      estimate = bitmap->selectivity;
++      {
++        std::lock_guard<std::mutex> lock(bitmap_mu_);
++        bitmap_cache_.emplace(key, bitmap);
++      }
++      return bitmap;
++    }
++
++    // Build (or hit) the bitmap before the timed query loop.
++    void prewarm_filter_bitmap(const void *filter_data) const {
++      double estimate;
++      get_filter_bitmap(filter_data, estimate);
++    }
++
+    private:
+     // Background insert I/O commit.
+     struct BgTask {
+@@ -464,6 +575,21 @@ namespace pipeann {
+     bool filter_precheck_ = false;  // set true only for mode=8
+     bool early_filter_check_ = false; // mode=9: check filter after IO, skip exact dist if non-matching
+ 
++    // Adaptive hybrid tunneling (mode=8 + --hybrid 1).
++    bool hybrid_tunnel_ = false;
++    uint32_t relay_hops_ = 3;
++    uint32_t relay_budget_ = 256;
++    uint32_t relay_total_budget_ = 4096;
++    uint32_t relay_sel_samples_ = 4096;
++    double relay_sel_threshold_ = 0.01;
++
++    // Cached exact valid-node bitmaps, keyed by the query label set.
++    mutable std::mutex bitmap_mu_;
++    mutable std::unordered_map<std::string, std::shared_ptr<FilterBitmap>> bitmap_cache_;
++    // Cached sampled estimate for label sets that stay on the baseline path,
++    // so Medium/High queries do not resample on every query.
++    mutable std::unordered_map<std::string, double> estimate_cache_;
++
+     void init_buffers(uint64_t nthreads);
+     void destroy_buffers();
+ 
+diff --git a/include/utils/percentile_stats.h b/include/utils/percentile_stats.h
+index 6e9802a..0bd0287 100644
+--- a/include/utils/percentile_stats.h
++++ b/include/utils/percentile_stats.h
+@@ -25,6 +25,12 @@ namespace pipeann {
+     double n_current_used = 0;  // # force return for latency limit
+     double n_filter_skip = 0;   // # nodes skipped by pre-IO filter check (mode=8)
+ 
++    // Adaptive hybrid tunneling (mode=8 + --hybrid 1).
++    double n_relay_expansions = 0;  // # filter-fail candidates that triggered a relay BFS
++    double n_relay_nodes = 0;       // # non-matching relay nodes traversed via FullAdj
++    double n_relay_valid = 0;       // # matching nodes discovered by the relay BFS
++    double selectivity_est = 0;     // estimated selectivity used for the mode switch
++
+     // Time breakdown (microseconds, mode=8 filter-aware search)
+     double bd_io_us = 0;        // IO submit + poll + wait
+     double bd_tunnel_us = 0;    // filter check + FullAdjIndex lookup + PQ distance
+diff --git a/src/search/pipe_search.cpp b/src/search/pipe_search.cpp
+index 65bd1c9..30cf0db 100644
+--- a/src/search/pipe_search.cpp
++++ b/src/search/pipe_search.cpp
+@@ -79,6 +79,20 @@ namespace pipeann {
+     Timer query_timer;
+ 
+     const unsigned effective_lsearch = l_search;
++
++    // Adaptive hybrid tunneling: decide once per query from the estimated
++    // selectivity of the query's label set.
++    bool hybrid_active = false;
++    double sel_est = 1.0;
++    std::shared_ptr<const FilterBitmap> filter_bitmap;
++    if (hybrid_tunnel_ && filter_precheck_ && filter_data != nullptr && tunneling_loaded()) {
++      filter_bitmap = get_filter_bitmap(filter_data, sel_est);
++      hybrid_active = filter_bitmap != nullptr && sel_est <= relay_sel_threshold_;
++    }
++    if (stats != nullptr) {
++      stats->selectivity_est = sel_est;
++    }
++
+     std::vector<Neighbor> retset(mem_L + this->params.R + effective_lsearch * 10);
+     auto &visited = *(query_buf->visited);
+     unsigned cur_list_size = 0;
+@@ -279,6 +293,72 @@ namespace pipeann {
+       return std::make_pair(n_in, n_out);
+     };
+ 
++    // ---------------------------------------------------------------------
++    // Hybrid Graph Tunneling.
++    // Baseline GateANN expands a filter-fail node by one hop and inserts all
++    // of its FullAdj neighbors, including non-matching ones, into retset.
++    // At very low selectivity the pool fills with non-matching vertices and
++    // the search never reaches a matching region. Hybrid mode performs a
++    // bounded BFS through non-matching vertices and inserts ONLY matching
++    // vertices, so relay vertices act purely as graph hops and never take a
++    // result slot. It is enabled only when the estimated selectivity is low.
++    // ---------------------------------------------------------------------
++    uint32_t relay_total_used = 0;
++    auto hybrid_relay_expand = [&](uint32_t start_id, unsigned &marker) -> uint32_t {
++      std::vector<uint32_t> frontier;
++      std::vector<uint32_t> next;
++      std::vector<uint32_t> valid;
++      frontier.reserve(relay_budget_);
++      next.reserve(relay_budget_);
++      valid.reserve(128);
++      frontier.push_back(start_id);
++      uint32_t nodes_visited = 0;
++      uint32_t valid_found = 0;
++      for (uint32_t hop = 0; hop < relay_hops_ && !frontier.empty(); ++hop) {
++        next.clear();
++        for (uint32_t id : frontier) {
++          if (nodes_visited >= relay_budget_ || relay_total_used >= relay_total_budget_) break;
++          ++nodes_visited;
++          ++relay_total_used;
++          uint32_t nnbrs = 0;
++          const uint32_t *nbrs = nullptr;
++          tunneling_get_adj(id, nnbrs, nbrs);
++          for (uint32_t m = 0; m < nnbrs; ++m) {
++            const uint32_t nb = nbrs[m];
++            if (visited.find(nb) != visited.end()) continue;
++            visited.insert(nb);
++            if (filter_bitmap ? filter_bitmap->test(nb) : check_filter(nb, filter_data)) {
++              valid.push_back(nb);
++            } else if (hop + 1 < relay_hops_) {
++              next.push_back(nb);
++            }
++          }
++          if (valid.size() >= MAX_N_EDGES / 2) break;
++        }
++        if (!valid.empty()) {
++          nbr_handler->compute_dists(query_buf, valid.data(), (unsigned) valid.size());
++          for (size_t i = 0; i < valid.size(); ++i) {
++            const float d = dist_scratch[i];
++            if (cur_list_size < effective_lsearch || d < retset[cur_list_size - 1].distance) {
++              Neighbor nn(valid[i], d, true);
++              auto r = InsertIntoPool(retset.data(), cur_list_size, nn);
++              if (cur_list_size < effective_lsearch) ++cur_list_size;
++              if (r < marker) marker = r;
++            }
++          }
++          valid_found += (uint32_t) valid.size();
++          valid.clear();
++        }
++        frontier.swap(next);
++      }
++      if (stats != nullptr) {
++        stats->n_relay_expansions += 1;
++        stats->n_relay_nodes += nodes_visited;
++        stats->n_relay_valid += valid_found;
++      }
++      return valid_found;
++    };
++
+     auto send_best_read_req = [&](uint32_t n) -> bool {
+       // auto io_st = std::chrono::high_resolution_clock::now();
+       unsigned n_sent = 0, marker = 0;
+@@ -307,33 +387,42 @@ namespace pipeann {
+         if (this->filter_precheck_ && filter_data != nullptr &&
+             ((this->filter_store_ && this->filter_store_->loaded()) ||
+              (this->spmat_filter_ && this->spmat_filter_->loaded()))) {
+-          if (!this->check_filter(retset[marker].id, filter_data)) {
++          const bool passes_filter = filter_bitmap ? filter_bitmap->test(retset[marker].id)
++                                                   : this->check_filter(retset[marker].id, filter_data);
++          if (!passes_filter) {
+             auto bd_tunnel_st = std::chrono::high_resolution_clock::now();
+             retset[marker].flag    = false;
+             retset[marker].visited = true;
+             // Tunnel: expand neighbors for free via full_adj_
+             if (this->tunneling_loaded()) {
+-              uint32_t nnbrs;
+-              const uint32_t *nbrs;
+-              this->tunneling_get_adj(retset[marker].id, nnbrs, nbrs);
+-              uint32_t temp_nbrs[MAX_N_EDGES];
+-              unsigned cnt = 0;
+-              for (unsigned m = 0; m < nnbrs; m++) {
+-                if (visited.find(nbrs[m]) == visited.end()) {
+-                  temp_nbrs[cnt++] = nbrs[m];
+-                  visited.insert(nbrs[m]);
++              if (hybrid_active && relay_total_used < relay_total_budget_) {
++                // Multi-hop relay: traverse non-matching vertices, insert only
++                // matching ones. Relay vertices never enter retset.
++                hybrid_relay_expand(retset[marker].id, marker);
++              } else {
++                // Baseline GateANN: one-hop expansion, all neighbors inserted.
++                uint32_t nnbrs;
++                const uint32_t *nbrs;
++                this->tunneling_get_adj(retset[marker].id, nnbrs, nbrs);
++                uint32_t temp_nbrs[MAX_N_EDGES];
++                unsigned cnt = 0;
++                for (unsigned m = 0; m < nnbrs; m++) {
++                  if (visited.find(nbrs[m]) == visited.end()) {
++                    temp_nbrs[cnt++] = nbrs[m];
++                    visited.insert(nbrs[m]);
++                  }
+                 }
+-              }
+-              if (cnt > 0) {
+-                nbr_handler->compute_dists(query_buf, temp_nbrs, cnt);
+-                for (unsigned m = 0; m < cnt; m++) {
+-                  float d = dist_scratch[m];
+-                  if (cur_list_size < effective_lsearch ||
+-                      d < retset[cur_list_size - 1].distance) {
+-                    Neighbor nn(temp_nbrs[m], d, true);
+-                    auto r = InsertIntoPool(retset.data(), cur_list_size, nn);
+-                    if (cur_list_size < effective_lsearch) ++cur_list_size;
+-                    if (r < marker) marker = r;  // rescan if inserted before marker
++                if (cnt > 0) {
++                  nbr_handler->compute_dists(query_buf, temp_nbrs, cnt);
++                  for (unsigned m = 0; m < cnt; m++) {
++                    float d = dist_scratch[m];
++                    if (cur_list_size < effective_lsearch ||
++                        d < retset[cur_list_size - 1].distance) {
++                      Neighbor nn(temp_nbrs[m], d, true);
++                      auto r = InsertIntoPool(retset.data(), cur_list_size, nn);
++                      if (cur_list_size < effective_lsearch) ++cur_list_size;
++                      if (r < marker) marker = r;  // rescan if inserted before marker
++                    }
+                   }
+                 }
+               }
+diff --git a/tests/search_disk_index_yfcc.cpp b/tests/search_disk_index_yfcc.cpp
+index e193967..2f49da0 100644
+--- a/tests/search_disk_index_yfcc.cpp
++++ b/tests/search_disk_index_yfcc.cpp
+@@ -151,9 +151,28 @@ int run(int argc, char **argv) {
+   }
+ 
+   std::vector<uint64_t> Lvec;
++  bool hybrid = false;
++  uint32_t relay_hops = 3, relay_budget = 256, relay_total_budget = 4096, sel_samples = 4096;
++  double sel_threshold = 0.01;
+   for (int c = idx; c < argc; c++) {
+-    uint64_t L = std::atoi(argv[c]);
+-    if (L >= recall_at) Lvec.push_back(L);
++    std::string arg(argv[c]);
++    auto tail = [&](const char *prefix) { return arg.substr(std::strlen(prefix)); };
++    if (arg.rfind("--hybrid=", 0) == 0) {
++      hybrid = std::stoi(tail("--hybrid=")) != 0;
++    } else if (arg.rfind("--relay-hops=", 0) == 0) {
++      relay_hops = (uint32_t) std::stoul(tail("--relay-hops="));
++    } else if (arg.rfind("--relay-budget=", 0) == 0) {
++      relay_budget = (uint32_t) std::stoul(tail("--relay-budget="));
++    } else if (arg.rfind("--relay-total-budget=", 0) == 0) {
++      relay_total_budget = (uint32_t) std::stoul(tail("--relay-total-budget="));
++    } else if (arg.rfind("--sel-threshold=", 0) == 0) {
++      sel_threshold = std::stod(tail("--sel-threshold="));
++    } else if (arg.rfind("--sel-samples=", 0) == 0) {
++      sel_samples = (uint32_t) std::stoul(tail("--sel-samples="));
++    } else {
++      uint64_t L = std::strtoull(argv[c], nullptr, 10);
++      if (L >= recall_at) Lvec.push_back(L);
++    }
+   }
+   if (Lvec.empty()) { std::cerr << "No valid L values\n"; return -1; }
+ 
+@@ -210,6 +229,18 @@ int run(int argc, char **argv) {
+   if (search_mode == FILTER_AWARE_PIPE_SEARCH) {
+     idx_->build_full_adj(full_adj_nbrs);
+     idx_->set_filter_precheck(true);
++    idx_->set_hybrid_tunnel(hybrid, relay_hops, relay_budget, relay_total_budget,
++                            sel_threshold, sel_samples);
++    if (hybrid) {
++      auto warm_st = std::chrono::high_resolution_clock::now();
++      for (int64_t i = 0; i < (int64_t) query_num; i++) {
++        idx_->prewarm_filter_bitmap(query_labels.get(i));
++      }
++      auto warm_ed = std::chrono::high_resolution_clock::now();
++      double warm_ms = std::chrono::duration<double, std::milli>(warm_ed - warm_st).count();
++      std::cout << "Hybrid bitmap prewarm: " << std::fixed << std::setprecision(1)
++                << warm_ms << " ms" << std::endl;
++    }
+   }
+ 
+   // Selector for mode=2 post-filter baseline
+@@ -288,6 +319,26 @@ int run(int argc, char **argv) {
+               << std::setw(12) << std::fixed << std::setprecision(0) << mean_bd_tunnel
+               << std::setw(12) << std::fixed << std::setprecision(0) << mean_bd_process
+               << std::endl;
++    if (hybrid) {
++      double mean_expansions = pipeann::get_mean_stats(
++          stats.data(), query_num,
++          [](const pipeann::QueryStats &s) { return s.n_relay_expansions; });
++      double mean_relay_nodes = pipeann::get_mean_stats(
++          stats.data(), query_num,
++          [](const pipeann::QueryStats &s) { return s.n_relay_nodes; });
++      double mean_relay_valid = pipeann::get_mean_stats(
++          stats.data(), query_num,
++          [](const pipeann::QueryStats &s) { return s.n_relay_valid; });
++      double mean_sel = pipeann::get_mean_stats(
++          stats.data(), query_num,
++          [](const pipeann::QueryStats &s) { return s.selectivity_est; });
++      std::cout << "[hybrid] L=" << L
++                << " sel=" << std::fixed << std::setprecision(4) << mean_sel
++                << " expansions=" << std::setprecision(1) << mean_expansions
++                << " relay_nodes=" << std::setprecision(0) << mean_relay_nodes
++                << " relay_valid=" << std::setprecision(0) << mean_relay_valid
++                << std::endl;
++    }
+   }
+ 
+   delete[] query;
+@@ -304,7 +355,9 @@ int main(int argc, char **argv) {
+               << " <mode(2=pipeann,8=gateann)>"
+               << " <mem_L> <cache_budget>"
+               << " [full_adj_max_nbrs(mode=8)]"
+-              << " <L1> [L2] ...\n";
++              << " <L1> [L2] ..."
++              << " [--hybrid=0|1] [--relay-hops=N] [--relay-budget=N]"
++              << " [--relay-total-budget=N] [--sel-threshold=F] [--sel-samples=N]\n";
+     return -1;
+   }
+   std::string type = argv[1];
